@@ -18,9 +18,11 @@ module Obsidian.Run.CUDA.Exec ( mkRandomVec
                               , (<>)
                               , (<==)
                               , syncAll
+                              , syncAllIO
                               , exec
                               , withCUDA
                               , withCUDA'
+                              , createCtx
                               , destroyCtx
                               , capture
                               , captureIO
@@ -297,6 +299,9 @@ instance Scalar a => KernelO (CUDAVector a) where
 syncAll :: CUDA () 
 syncAll = lift $ CUDA.sync
 
+syncAllIO :: IO ()
+syncAllIO = CUDA.sync
+
 -- Tweak these 
 infixl 4 <>
 infixl 3 <==
@@ -332,21 +337,25 @@ newIdent =
 data Context = Context {context :: !CUDA.Context,
                         props   :: !CUDA.DeviceProperties}
 
+type Device = (CUDA.Device, CUDA.DeviceProperties)
 
 ---------------------------------------------------------------------------
 -- Initialize
 -- TODO: this function does too much! return a list of devices instead
 ---------------------------------------------------------------------------
-initialise :: IO Context
+initialise :: IO [Device]
 initialise = do
   CUDA.initialise []
-  devs <- getDevices
+  getDevices
 
-  case devs of
-    [] -> error "No CUDA device found!"
-    (x:_) ->
-      do ctx <- CUDA.create (fst x) [CUDA.SchedAuto]
-         return (Context ctx (snd x))
+
+---------------------------------------------------------------------------
+-- createCtx
+---------------------------------------------------------------------------
+createCtx :: Device -> IO Context
+createCtx (dev,prop) = do 
+  ctx <- CUDA.create dev [CUDA.SchedAuto]
+  return (Context ctx prop)
 
 
 ---------------------------------------------------------------------------
