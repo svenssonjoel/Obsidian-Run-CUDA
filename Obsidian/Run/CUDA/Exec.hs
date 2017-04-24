@@ -2,7 +2,10 @@
              ScopedTypeVariables,
              TypeFamilies,
              TypeSynonymInstances,
-             FlexibleInstances #-} 
+             FlexibleInstances #-}
+{-# LANGUAGE BangPatterns #-}
+
+-- TODO: Needs more work
 
 module Obsidian.Run.CUDA.Exec ( mkRandomVec
                               , CUDAVector
@@ -17,11 +20,20 @@ module Obsidian.Run.CUDA.Exec ( mkRandomVec
                               , syncAll
                               , exec
                               , withCUDA
+                              , withCUDA'
                               , capture
                               , captureIO
                               , useVector
                               , allocaVector
+                              , withVector
                               , allocaFillVector
+                              , withVectorFill
+                              , mallocVector
+                              , mallocVectorIO
+                              , copyInIO
+                              , copyOutIO
+                              , freeVector
+                              , freeVectorIO
                               , fill
                               , peekCUDAVector
                               , copyOut
@@ -115,8 +127,8 @@ mkRandomVec k = withSystemRandom $ \g -> uniformVector g k :: IO (V.Vector a)
 -- An array located in GPU memory
 ---------------------------------------------------------------------------
 -- | Represents vectors (arrays) in GPU memory.
-data CUDAVector a = CUDAVector {cvPtr :: CUDA.DevicePtr a,
-                                cvLen :: Word32} 
+data CUDAVector a = CUDAVector {cvPtr :: !(CUDA.DevicePtr a),
+                                cvLen :: !Word32} 
 
 ---------------------------------------------------------------------------
 -- Get a list of devices from the CUDA driver
@@ -179,11 +191,11 @@ type CUDA a =  StateT CUDAState IO a
 
 -- | A representation of a CUDA kernel. This represents the
 --   kernel after it has been loaded from an Object file. 
-data KernelT a = KernelT {ktFun :: CUDA.Fun,
-                          ktThreadsPerBlock :: Word32,
-                          ktSharedBytes :: Word32,
-                          ktInputs :: [CUDA.FunParam],
-                          ktOutput :: [CUDA.FunParam] }
+data KernelT a = KernelT {ktFun             :: !CUDA.Fun,
+                          ktThreadsPerBlock :: !Word32,
+                          ktSharedBytes     :: !Word32,
+                          ktInputs          :: ![CUDA.FunParam],
+                          ktOutput          :: ![CUDA.FunParam] }
 
 ---------------------------------------------------------------------------
 -- Kernel Input and Output classes
@@ -313,6 +325,42 @@ newIdent =
     modify (\s -> s {csIdent = i+1 }) 
     return i
 
+---------------------------------------------------------------------------
+-- Context
+---------------------------------------------------------------------------
+data Context = Context {context :: !CUDA.Context,
+                        props   :: !CUDA.DeviceProperties}
+
+
+---------------------------------------------------------------------------
+-- Initialize
+-- TODO: this function does too much! return a list of devices instead
+---------------------------------------------------------------------------
+initialise :: IO Context
+initialise = do
+  CUDA.initialise []
+  devs <- getDevices
+
+  case devs of
+    [] -> error "No CUDA device found!"
+    (x:_) ->
+      do ctx <- CUDA.create (fst x) [CUDA.SchedAuto]
+         return (Context ctx (snd x))
+
+
+---------------------------------------------------------------------------
+-- destroyCtx
+---------------------------------------------------------------------------
+destroyCtx :: Context -> IO ()
+destroyCtx (Context ctx props) = CUDA.destroy ctx
+
+---------------------------------------------------------------------------
+-- Run a CUDA computation in a given context
+---------------------------------------------------------------------------
+withCUDA' :: Context -> CUDA a -> IO a
+withCUDA' (Context ctx props) p = do
+  (a,_) <- runStateT p (CUDAState 0 ctx props)
+  return a
 
 ---------------------------------------------------------------------------
 -- Run a CUDA computation
@@ -428,6 +476,7 @@ useVector v f =
 ---------------------------------------------------------------------------
 -- allocaVector: allocates room for a vector in the GPU Global mem
 ---------------------------------------------------------------------------
+{-# DEPRECATED allocaVector "Use withVector instead" #-}
 -- | allocate a vector in GPU Device memory 
 allocaVector :: V.Storable a => 
                 Int -> (CUDAVector a -> CUDA b) -> CUDA b                
@@ -439,9 +488,15 @@ allocaVector n f =
     lift $ CUDA.free dptr
     return b 
 
+withVector :: V.Storable a =>
+              Int -> (CUDAVector a -> CUDA b) -> CUDA b
+withVector = allocaVector              
+
+
 ---------------------------------------------------------------------------
 -- Allocate and fill with default value
 ---------------------------------------------------------------------------
+{-# DEPRECATED allocaFillVector "Use withVectorFill instead" #-}
 -- | Allocate and Fill a vector in GPU Device memory
 allocaFillVector :: V.Storable a => 
                 Int -> a -> (CUDAVector a -> CUDA b) -> CUDA b                
@@ -452,15 +507,64 @@ allocaFillVector n a f =
     let cvector = CUDAVector dptr (fromIntegral n)
     b <- f cvector -- dptr
     lift $ CUDA.free dptr
-    return b 
+    return b
+
+withVectorFill :: V.Storable a =>
+                  Int -> a -> (CUDAVector a -> CUDA b) -> CUDA b
+withVectorFill = allocaFillVector
+
+---------------------------------------------------------------------------
+-- 
+---------------------------------------------------------------------------
+
+
+mallocVector :: V.Storable a => Int -> CUDA (CUDAVector a)
+mallocVector n = do
+  dptr <- lift $ CUDA.mallocArray n
+  return $ CUDAVector dptr (fromIntegral n) 
+
+
+mallocVectorIO :: V.Storable a => Int -> IO (CUDAVector a)
+mallocVectorIO n = do
+  dptr <- CUDA.mallocArray n
+  return $ CUDAVector dptr (fromIntegral n)
+
+
+freeVector :: CUDAVector a -> CUDA ()
+freeVector (CUDAVector dptr _) = lift $ CUDA.free dptr
+
+freeVectorIO :: CUDAVector a -> IO ()
+freeVectorIO (CUDAVector dptr _) = CUDA.free dptr
+
+copyInIO :: V.Storable a => V.Vector a -> IO (CUDAVector a)
+copyInIO v = do
+  let (hfptr,n) = V.unsafeToForeignPtr0 v
+
+  dptr <- CUDA.mallocArray n
+  let hptr = unsafeForeignPtrToPtr hfptr
+  CUDA.pokeArray n hptr dptr
+  let cvector = CUDAVector dptr (fromIntegral (V.length v))
+  return cvector
+
+copyOutIO :: V.Storable a => CUDAVector a -> IO (V.Vector a)
+copyOutIO (CUDAVector dptr n) = do
+  (fptr :: ForeignPtr a) <- mallocForeignPtrArray (fromIntegral n)
+  let ptr = unsafeForeignPtrToPtr fptr
+  CUDA.peekArray (fromIntegral n) dptr ptr
+  return $ V.unsafeFromForeignPtr fptr 0 (fromIntegral n)
+  
+                 
+             
+  
+  
+
+
 
 ---------------------------------------------------------------------------
 -- Fill a Vector
 ---------------------------------------------------------------------------
 -- | Fill a vector 
-fill :: V.Storable a =>
-        CUDAVector a -> 
-        a -> CUDA ()
+fill :: V.Storable a => CUDAVector a -> a -> CUDA ()
 fill (CUDAVector dptr n) a =
   lift $ CUDA.memset dptr (fromIntegral n) a 
 
