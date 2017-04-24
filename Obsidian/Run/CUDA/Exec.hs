@@ -21,6 +21,7 @@ module Obsidian.Run.CUDA.Exec ( mkRandomVec
                               , exec
                               , withCUDA
                               , withCUDA'
+                              , destroyCtx
                               , capture
                               , captureIO
                               , useVector
