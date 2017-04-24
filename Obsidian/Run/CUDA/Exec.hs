@@ -341,7 +341,6 @@ type Device = (CUDA.Device, CUDA.DeviceProperties)
 
 ---------------------------------------------------------------------------
 -- Initialize
--- TODO: this function does too much! return a list of devices instead
 ---------------------------------------------------------------------------
 initialise :: IO [Device]
 initialise = do
