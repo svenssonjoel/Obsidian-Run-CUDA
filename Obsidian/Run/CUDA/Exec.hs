@@ -39,13 +39,8 @@ import qualified Foreign.CUDA.Driver as CUDA
 import Obsidian.CodeGen.Reify
 import Obsidian.CodeGen.CUDA
 
--- import Obsidian.Types -- experimental
-import Obsidian.Exp hiding (sizeOf)
-import Obsidian.Array
-import Obsidian.Program (Grid, GProgram)
-import Obsidian.Mutable
+import Obsidian hiding (zip, sizeOf, exec)
 
--- import Foreign.Marshal.Array
 import Foreign.ForeignPtr.Unsafe -- (req GHC 7.6 ?)
 import Foreign.ForeignPtr 
 
